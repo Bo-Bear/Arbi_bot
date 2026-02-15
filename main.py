@@ -143,6 +143,8 @@ def main() -> None:
     # Events are skipped for EVENT_COOLDOWN_SCANS after a trade.
     event_last_traded: Dict[str, int] = {}
 
+    exit_reason = "max_trades_reached"
+
     try:
         while len(trades) < config.MAX_TRADES_PER_SESSION:
             scan_count += 1
@@ -150,13 +152,17 @@ def main() -> None:
             print_scan_header(scan_count)
 
             # Step 1: Fetch all active events from Gamma API
-            print("  Fetching events...", end=" ", flush=True)
-            raw_events = fetch_all_active_events()
-            print(f"{len(raw_events)} raw events")
+            try:
+                print("  Fetching events...", end=" ", flush=True)
+                raw_events = fetch_all_active_events()
+                print(f"{len(raw_events)} raw events")
+            except Exception as e:
+                print(f"\n  ERROR fetching events: {e}")
+                raw_events = []
 
             if not raw_events:
                 print("  WARNING: Gamma API returned 0 events (API may be rate-limited)")
-                _sleep_with_summary(scan_count, scan_t0, logfile, 0, 0)
+                _sleep_with_summary(scan_count, scan_t0, logfile, 0, 0, raw_count=0)
                 continue
 
             # Step 2: Filter to multi-outcome events
@@ -166,7 +172,7 @@ def main() -> None:
 
             if not multi_events:
                 print("  No qualifying multi-outcome neg_risk events found.")
-                _sleep_with_summary(scan_count, scan_t0, logfile, 0, 0)
+                _sleep_with_summary(scan_count, scan_t0, logfile, 0, 0, raw_count=len(raw_events))
                 continue
 
             # Show how many events are budget-capped
@@ -209,6 +215,7 @@ def main() -> None:
                         f"\n  Circuit breaker: {consecutive_failures} "
                         f"scans with no opportunities. Stopping."
                     )
+                    exit_reason = "circuit_breaker"
                     break
                 continue
 
@@ -308,6 +315,7 @@ def main() -> None:
                         f"\n  DRAWDOWN LIMIT: ${-session_profit:.2f} "
                         f">= ${config.MAX_SESSION_DRAWDOWN:.2f}. Stopping."
                     )
+                    exit_reason = "drawdown_limit"
                     break
 
             # Log scan summary
@@ -315,6 +323,7 @@ def main() -> None:
             log_scan_summary(
                 logfile, scan_count,
                 len(multi_events), len(opportunities), scan_ms,
+                raw_count=len(raw_events),
             )
 
             # Also display other opportunities found
@@ -326,14 +335,19 @@ def main() -> None:
                 time.sleep(config.SCAN_INTERVAL_SECONDS)
 
     except KeyboardInterrupt:
+        exit_reason = "ctrl_c"
         print("\n\n  Shutdown: Ctrl+C received.")
+    except Exception as e:
+        exit_reason = f"error: {e}"
+        print(f"\n\n  Shutdown: unexpected error: {e}")
     finally:
         ws_feed.stop()
         print(f"\n  Logs saved to: {logfile}")
 
     # Session summary
+    print(f"  Exit reason: {exit_reason}")
     print_session_summary(trades, scan_count, total_events_scanned)
-    log_session_end(logfile, "normal", {
+    log_session_end(logfile, exit_reason, {
         "total_scans": scan_count,
         "total_trades": len(trades),
         "session_cost": round(session_cost, 4),
@@ -349,10 +363,14 @@ def _sleep_with_summary(
     logfile: str,
     num_events: int,
     num_opps: int,
+    raw_count: int = -1,
 ) -> None:
     """Log scan summary and sleep between scans."""
     scan_ms = (time.monotonic() - scan_t0) * 1000
-    log_scan_summary(logfile, scan_num, num_events, num_opps, scan_ms)
+    log_scan_summary(
+        logfile, scan_num, num_events, num_opps, scan_ms,
+        raw_count=raw_count,
+    )
     print(f"  Sleeping {config.SCAN_INTERVAL_SECONDS}s...")
     time.sleep(config.SCAN_INTERVAL_SECONDS)
 

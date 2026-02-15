@@ -123,16 +123,20 @@ def log_scan_summary(
     num_events: int,
     num_opportunities: int,
     scan_ms: float,
+    raw_count: int = -1,
 ) -> None:
     """Log per-scan summary."""
-    append_log(logfile, {
+    row = {
         "log_type": "scan_summary",
         "ts": _utc_ts(),
         "scan_num": scan_num,
         "num_events": num_events,
         "num_opportunities": num_opportunities,
         "scan_ms": round(scan_ms, 1),
-    })
+    }
+    if raw_count >= 0:
+        row["raw_events"] = raw_count
+    append_log(logfile, row)
 
 
 def log_session_start(logfile: str, config: dict) -> None:
