@@ -6,6 +6,7 @@ event groupings, and current prices. No authentication required.
 
 import json
 import logging
+import time
 from typing import List, Optional
 
 import requests
@@ -25,10 +26,25 @@ def _get_session() -> requests.Session:
     return _http_session
 
 
-def fetch_active_events(limit: int = 200, offset: int = 0) -> List[dict]:
+def _reset_session() -> requests.Session:
+    """Create a fresh HTTP session (fixes stale connections)."""
+    global _http_session
+    if _http_session is not None:
+        try:
+            _http_session.close()
+        except Exception:
+            pass
+    _http_session = requests.Session()
+    return _http_session
+
+
+def fetch_active_events(
+    limit: int = 200, offset: int = 0, retries: int = 3
+) -> List[dict]:
     """Fetch active, open events from the Gamma API.
 
     Returns raw event dicts with nested market data.
+    Retries with exponential backoff on failure.
     """
     params = {
         "active": "true",
@@ -38,15 +54,33 @@ def fetch_active_events(limit: int = 200, offset: int = 0) -> List[dict]:
         "order": "liquidity",
         "ascending": "false",
     }
-    try:
-        r = _get_session().get(
-            f"{POLY_GAMMA_BASE}/events", params=params, timeout=20
-        )
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        logger.error("Gamma /events fetch failed: %s", e)
-        return []
+    last_err = None
+    for attempt in range(retries):
+        try:
+            session = _get_session() if attempt == 0 else _reset_session()
+            r = session.get(
+                f"{POLY_GAMMA_BASE}/events", params=params, timeout=20
+            )
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, list):
+                return data
+            logger.warning("Gamma API returned non-list: %s", type(data))
+            return []
+        except Exception as e:
+            last_err = e
+            wait = 2 ** attempt
+            logger.warning(
+                "Gamma /events fetch attempt %d/%d failed: %s (retry in %ds)",
+                attempt + 1, retries, e, wait,
+            )
+            print(f"    [API retry {attempt + 1}/{retries}: {e}]")
+            if attempt < retries - 1:
+                time.sleep(wait)
+
+    logger.error("Gamma /events fetch failed after %d retries: %s", retries, last_err)
+    print(f"    [API FAILED after {retries} retries: {last_err}]")
+    return []
 
 
 def fetch_all_active_events(max_pages: int = 5, page_size: int = 200) -> List[dict]:
@@ -55,6 +89,9 @@ def fetch_all_active_events(max_pages: int = 5, page_size: int = 200) -> List[di
     for page in range(max_pages):
         batch = fetch_active_events(limit=page_size, offset=page * page_size)
         if not batch:
+            if page == 0:
+                # First page empty — API may be down, don't silently return nothing
+                logger.warning("Gamma API returned 0 events on first page")
             break
         all_events.extend(batch)
         if len(batch) < page_size:

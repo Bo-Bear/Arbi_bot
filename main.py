@@ -152,15 +152,20 @@ def main() -> None:
             # Step 1: Fetch all active events from Gamma API
             print("  Fetching events...", end=" ", flush=True)
             raw_events = fetch_all_active_events()
-            print(f"{len(raw_events)} events")
+            print(f"{len(raw_events)} raw events")
+
+            if not raw_events:
+                print("  WARNING: Gamma API returned 0 events (API may be rate-limited)")
+                _sleep_with_summary(scan_count, scan_t0, logfile, 0, 0)
+                continue
 
             # Step 2: Filter to multi-outcome events
             multi_events = discover_multi_outcome_events(raw_events)
             total_events_scanned += len(multi_events)
-            print(f"  Multi-outcome events: {len(multi_events)}")
+            print(f"  Multi-outcome events: {len(multi_events)} (of {len(raw_events)} total)")
 
             if not multi_events:
-                print("  No multi-outcome events found.")
+                print("  No qualifying multi-outcome neg_risk events found.")
                 _sleep_with_summary(scan_count, scan_t0, logfile, 0, 0)
                 continue
 
