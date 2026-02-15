@@ -164,9 +164,13 @@ def discover_multi_outcome_events(events: Optional[List[dict]] = None) -> List[M
         title = event_data.get("title") or ""
         slug = event_data.get("slug") or ""
 
-        # Check if this is a neg_risk event (mutually exclusive outcomes)
-        # All markets in the event should agree on neg_risk status
-        neg_risk = any(m.get("negRisk", False) for m in markets)
+        # Check if this is a neg_risk event (mutually exclusive outcomes).
+        # Only events where ALL markets are negRisk are true multi-outcome
+        # arb candidates.  Sports "More Markets" bundles (O/U, BTTS, etc.)
+        # have negRisk=False and their outcomes are NOT mutually exclusive.
+        neg_risk = all(m.get("negRisk", False) for m in markets)
+        if not neg_risk:
+            continue
 
         # Parse each market into an outcome token
         outcome_tokens: List[OutcomeToken] = []

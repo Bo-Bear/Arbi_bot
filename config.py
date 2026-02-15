@@ -28,6 +28,11 @@ MIN_EXECUTABLE_SIZE: float = float(os.getenv("MIN_EXECUTABLE_SIZE", "5"))
 # Maximum total dollar cost per arb (risk cap)
 MAX_POSITION_COST: float = float(os.getenv("MAX_POSITION_COST", "200.0"))
 
+# --- Cooldown ---
+# After trading an event, skip it for this many scans so the bot finds
+# new opportunities instead of re-trading the same stale orderbook.
+EVENT_COOLDOWN_SCANS: int = int(os.getenv("EVENT_COOLDOWN_SCANS", "10"))
+
 # --- Execution ---
 ORDER_TIMEOUT_S: float = float(os.getenv("ORDER_TIMEOUT_S", "10"))
 # Price buffer added to limit orders to improve fill rate

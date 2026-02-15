@@ -138,6 +138,9 @@ def main() -> None:
     # Cumulative cost deployed per event — prevents re-trading the same event
     # beyond MAX_POSITION_COST across scans.
     position_costs: Dict[str, float] = {}
+    # Per-event cooldown: maps event_id -> scan number when last traded.
+    # Events are skipped for EVENT_COOLDOWN_SCANS after a trade.
+    event_last_traded: Dict[str, int] = {}
 
     try:
         while len(trades) < config.MAX_TRADES_PER_SESSION:
@@ -168,6 +171,18 @@ def main() -> None:
                 )
                 if capped:
                     print(f"  Budget-capped events: {capped} (already at max position)")
+
+            # Filter out events still on cooldown from a recent trade
+            if event_last_traded:
+                before = len(multi_events)
+                multi_events = [
+                    e for e in multi_events
+                    if (scan_count - event_last_traded.get(e.event_id, 0))
+                    > config.EVENT_COOLDOWN_SCANS
+                ]
+                cooled = before - len(multi_events)
+                if cooled:
+                    print(f"  Cooldown-skipped events: {cooled} (traded recently)")
 
             # Step 3: Scan for arbitrage opportunities
             print("  Scanning orderbooks...", end=" ", flush=True)
@@ -267,6 +282,8 @@ def main() -> None:
                 # Accumulate cost for this event to prevent re-trading
                 eid = best.event_id
                 position_costs[eid] = position_costs.get(eid, 0.0) + cost
+                # Start cooldown so we don't re-trade this event next scan
+                event_last_traded[eid] = scan_count
                 remaining = config.MAX_POSITION_COST - position_costs[eid]
                 print(
                     f"\n  Position [{eid}]: "
