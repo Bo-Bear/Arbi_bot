@@ -140,7 +140,16 @@ def detect_arbitrage(
     profit_pct = (profit_per_share / total_cost) * 100.0
 
     # Check profit thresholds (include fee/slippage buffer for live viability)
-    if profit_pct < MIN_PROFIT_PCT + FEE_BUFFER_PCT:
+    effective_min = MIN_PROFIT_PCT + FEE_BUFFER_PCT
+    if profit_pct < effective_min:
+        if profit_pct >= MIN_PROFIT_PCT:
+            # Would pass raw threshold but fails after fee buffer — worth logging
+            logger.info(
+                "Event %s: profit %.2f%% passes raw min (%.1f%%) but "
+                "fails with fee buffer (+%.1f%% = %.1f%% effective)",
+                event.title[:30], profit_pct, MIN_PROFIT_PCT,
+                FEE_BUFFER_PCT, effective_min,
+            )
         return None
     if profit_pct > MAX_PROFIT_PCT:
         logger.info(

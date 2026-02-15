@@ -28,6 +28,11 @@ def save_positions(
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
         os.replace(tmp, POSITION_STATE_FILE)
+        total = sum(position_costs.values())
+        logger.info(
+            "Position state saved: %d events, $%.2f total deployed",
+            len(position_costs), total,
+        )
     except Exception as e:
         logger.error("Failed to save position state: %s", e)
 

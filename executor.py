@@ -262,9 +262,16 @@ def execute_opportunity(
 
     # Live mode: refresh quotes right before execution to avoid stale prices
     if not is_paper:
+        old_cost = opportunity.total_cost
+        refresh_t0 = time.monotonic()
         refreshed = _refresh_quotes(opportunity, ws_feed)
+        refresh_ms = (time.monotonic() - refresh_t0) * 1000
+
         if refreshed is None:
-            logger.warning("Opportunity vanished on pre-execution refresh — skipping")
+            logger.warning(
+                "Opportunity vanished on pre-execution refresh (%.0fms) — skipping",
+                refresh_ms,
+            )
             return ExecutionResult(
                 opportunity=opportunity,
                 leg_fills=[],
@@ -275,16 +282,28 @@ def execute_opportunity(
                 num_legs_filled=0,
                 num_legs_failed=len(opportunity.quotes),
             )
+
+        new_cost = sum(q.best_ask_price for q in refreshed)
+        cost_drift = new_cost - old_cost
+        logger.info(
+            "Quote refresh OK (%.0fms): cost $%.4f -> $%.4f (drift %+.4f)",
+            refresh_ms, old_cost, new_cost, cost_drift,
+        )
+        if abs(cost_drift) > 0.01:
+            logger.warning(
+                "Significant price drift detected: %+.4f ($%.4f -> $%.4f)",
+                cost_drift, old_cost, new_cost,
+            )
+
         # Update the quotes used for execution
         opportunity = ArbitrageOpportunity(
             event_id=opportunity.event_id,
             event_title=opportunity.event_title,
             event_slug=opportunity.event_slug,
             quotes=refreshed,
-            total_cost=sum(q.best_ask_price for q in refreshed),
-            profit_per_share=1.0 - sum(q.best_ask_price for q in refreshed),
-            profit_pct=((1.0 - sum(q.best_ask_price for q in refreshed))
-                        / sum(q.best_ask_price for q in refreshed) * 100.0),
+            total_cost=new_cost,
+            profit_per_share=1.0 - new_cost,
+            profit_pct=((1.0 - new_cost) / new_cost * 100.0),
             executable_size=min(q.available_size for q in refreshed),
             neg_risk=opportunity.neg_risk,
         )

@@ -24,7 +24,9 @@ from display import (
     print_session_summary,
 )
 from executor import execute_opportunity
+import logging
 from logger import (
+    append_log,
     get_logfile_path,
     log_execution,
     log_opportunity,
@@ -33,6 +35,8 @@ from logger import (
     log_session_start,
     setup_logging,
 )
+
+main_logger = logging.getLogger(__name__)
 from models import ArbitrageOpportunity, ExecutionResult
 from polymarket.gamma import discover_multi_outcome_events, fetch_all_active_events
 from polymarket.websocket_feed import OrderbookFeed
@@ -114,10 +118,16 @@ def main() -> None:
         "min_outcomes": config.MIN_OUTCOMES,
         "max_outcomes": config.MAX_OUTCOMES,
         "min_profit_pct": config.MIN_PROFIT_PCT,
+        "fee_buffer_pct": config.FEE_BUFFER_PCT,
+        "effective_min_profit_pct": config.MIN_PROFIT_PCT + config.FEE_BUFFER_PCT,
         "max_profit_pct": config.MAX_PROFIT_PCT,
         "min_executable_size": config.MIN_EXECUTABLE_SIZE,
         "max_position_cost": config.MAX_POSITION_COST,
         "scan_interval": config.SCAN_INTERVAL_SECONDS,
+        "max_quote_staleness_s": config.MAX_QUOTE_STALENESS_S,
+        "allow_gtc_fallback": config.ALLOW_GTC_FALLBACK,
+        "unwind_timeout_s": config.UNWIND_TIMEOUT_S,
+        "order_timeout_s": config.ORDER_TIMEOUT_S,
     })
 
     # Start WebSocket feed for real-time orderbook data
@@ -141,6 +151,17 @@ def main() -> None:
     position_costs, event_last_traded = load_positions()
     if position_costs:
         total_deployed = sum(position_costs.values())
+        main_logger.info(
+            "Restored position state: %d events, $%.2f deployed",
+            len(position_costs), total_deployed,
+        )
+        append_log(logfile, {
+            "log_type": "position_restore",
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "num_events": len(position_costs),
+            "total_deployed": round(total_deployed, 4),
+            "events": {k: round(v, 4) for k, v in position_costs.items()},
+        })
         print(f"  Restored positions: {len(position_costs)} events, ${total_deployed:.2f} deployed")
 
     exit_reason = "max_trades_reached"
@@ -254,6 +275,21 @@ def main() -> None:
             # maximum loss is the total cost of the position.
             estimated_cost = best.total_cost * float(int(best.executable_size))
             if session_profit - estimated_cost < -config.MAX_SESSION_DRAWDOWN:
+                main_logger.warning(
+                    "DRAWDOWN GUARD: est_cost=$%.2f, session_pnl=$%.2f, limit=$%.2f — skipping %s",
+                    estimated_cost, session_profit,
+                    config.MAX_SESSION_DRAWDOWN, best.event_title[:40],
+                )
+                append_log(logfile, {
+                    "log_type": "drawdown_guard",
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "scan_num": scan_count,
+                    "event_title": best.event_title,
+                    "event_id": best.event_id,
+                    "estimated_cost": round(estimated_cost, 4),
+                    "session_profit": round(session_profit, 4),
+                    "drawdown_limit": config.MAX_SESSION_DRAWDOWN,
+                })
                 print(
                     f"\n  DRAWDOWN GUARD: next trade could cost ${estimated_cost:.2f}, "
                     f"session P&L=${session_profit:.2f}, limit=${config.MAX_SESSION_DRAWDOWN:.2f}. "
