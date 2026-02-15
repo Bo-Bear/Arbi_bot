@@ -135,6 +135,9 @@ def main() -> None:
     consecutive_failures = 0
     session_cost = 0.0
     session_profit = 0.0
+    # Cumulative cost deployed per event — prevents re-trading the same event
+    # beyond MAX_POSITION_COST across scans.
+    position_costs: Dict[str, float] = {}
 
     try:
         while len(trades) < config.MAX_TRADES_PER_SESSION:
@@ -157,9 +160,20 @@ def main() -> None:
                 _sleep_with_summary(scan_count, scan_t0, logfile, 0, 0)
                 continue
 
+            # Show how many events are budget-capped
+            if position_costs:
+                capped = sum(
+                    1 for e in multi_events
+                    if position_costs.get(e.event_id, 0.0) >= config.MAX_POSITION_COST
+                )
+                if capped:
+                    print(f"  Budget-capped events: {capped} (already at max position)")
+
             # Step 3: Scan for arbitrage opportunities
             print("  Scanning orderbooks...", end=" ", flush=True)
-            opportunities = scan_for_opportunities(multi_events, ws_feed)
+            opportunities = scan_for_opportunities(
+                multi_events, ws_feed, position_costs=position_costs,
+            )
             print(f"{len(opportunities)} opportunities found")
 
             if not opportunities:
@@ -243,14 +257,24 @@ def main() -> None:
                 ],
             )
 
-            # Track session P&L
+            # Track session P&L and per-event position costs
             if result.all_filled:
                 cost = result.total_cost_actual * result.total_filled_size
                 profit = (1.0 - result.total_cost_actual) * result.total_filled_size
                 session_cost += cost
                 session_profit += profit
+
+                # Accumulate cost for this event to prevent re-trading
+                eid = best.event_id
+                position_costs[eid] = position_costs.get(eid, 0.0) + cost
+                remaining = config.MAX_POSITION_COST - position_costs[eid]
                 print(
-                    f"\n  Session P&L: ${session_profit:.2f} profit "
+                    f"\n  Position [{eid}]: "
+                    f"${position_costs[eid]:.2f} deployed, "
+                    f"${max(remaining, 0):.2f} remaining"
+                )
+                print(
+                    f"  Session P&L: ${session_profit:.2f} profit "
                     f"on ${session_cost:.2f} deployed "
                     f"({len(trades)} trades)"
                 )
@@ -291,6 +315,8 @@ def main() -> None:
         "total_trades": len(trades),
         "session_cost": round(session_cost, 4),
         "session_profit": round(session_profit, 4),
+        "unique_events_traded": len(position_costs),
+        "position_costs": {k: round(v, 4) for k, v in position_costs.items()},
     })
 
 

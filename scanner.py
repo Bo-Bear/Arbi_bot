@@ -6,7 +6,7 @@ where the sum of best asks is less than $1.00.
 """
 
 import logging
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from config import (
     MIN_PROFIT_PCT, MAX_PROFIT_PCT, MIN_EXECUTABLE_SIZE, MAX_POSITION_COST,
@@ -89,6 +89,7 @@ def quote_event(
 def detect_arbitrage(
     event: MultiOutcomeEvent,
     quotes: List[OutcomeQuote],
+    remaining_budget: Optional[float] = None,
 ) -> Optional[ArbitrageOpportunity]:
     """Check if a multi-outcome event has an arbitrage opportunity.
 
@@ -98,10 +99,26 @@ def detect_arbitrage(
     3. Profit % exceeds MIN_PROFIT_PCT
     4. Profit % is below MAX_PROFIT_PCT (filter stale data)
     5. Executable size meets MIN_EXECUTABLE_SIZE
-    6. Total cost within MAX_POSITION_COST limits
+    6. Total cost within remaining position budget
+
+    Args:
+        event: The multi-outcome event to check.
+        quotes: Current price quotes for all outcomes.
+        remaining_budget: Dollars remaining for this event before hitting
+            MAX_POSITION_COST.  None means use the full MAX_POSITION_COST.
 
     Returns an ArbitrageOpportunity if found, None otherwise.
     """
+    budget = remaining_budget if remaining_budget is not None else MAX_POSITION_COST
+
+    # Budget exhausted for this event
+    if budget <= 0:
+        logger.debug(
+            "Event %s: position budget exhausted",
+            event.title[:30],
+        )
+        return None
+
     # All outcomes must have valid asks
     valid_quotes = [q for q in quotes if q.best_ask_price > 0 and q.available_size > 0]
     if len(valid_quotes) != len(quotes):
@@ -136,10 +153,18 @@ def detect_arbitrage(
     if executable_size < MIN_EXECUTABLE_SIZE:
         return None
 
-    # Cap executable size by max position cost
+    # Cap executable size by remaining position budget for this event
     if total_cost > 0:
-        max_shares = MAX_POSITION_COST / total_cost
+        max_shares = budget / total_cost
         executable_size = min(executable_size, max_shares)
+
+    # Re-check min size after budget cap
+    if executable_size < MIN_EXECUTABLE_SIZE:
+        logger.debug(
+            "Event %s: size %.1f below min after budget cap (budget=$%.2f)",
+            event.title[:30], executable_size, budget,
+        )
+        return None
 
     return ArbitrageOpportunity(
         event_id=event.event_id,
@@ -157,17 +182,38 @@ def detect_arbitrage(
 def scan_for_opportunities(
     events: List[MultiOutcomeEvent],
     ws_feed: Optional[OrderbookFeed] = None,
+    position_costs: Optional[Dict[str, float]] = None,
 ) -> List[ArbitrageOpportunity]:
     """Scan all multi-outcome events and return arbitrage opportunities.
 
+    Args:
+        events: Multi-outcome events to scan.
+        ws_feed: Optional WebSocket feed for real-time orderbook data.
+        position_costs: Cumulative cost already deployed per event_id.
+            Used to enforce MAX_POSITION_COST across scans.  Events that
+            have already reached the cap are skipped entirely.
+
     Returns opportunities sorted by profit_pct descending.
     """
+    costs = position_costs or {}
     opportunities: List[ArbitrageOpportunity] = []
+    skipped_budget = 0
 
     for event in events:
+        # Compute remaining budget for this event
+        spent = costs.get(event.event_id, 0.0)
+        remaining = MAX_POSITION_COST - spent
+        if remaining <= 0:
+            skipped_budget += 1
+            logger.debug(
+                "Skipping event %s: budget exhausted ($%.2f spent)",
+                event.title[:30], spent,
+            )
+            continue
+
         try:
             quotes = quote_event(event, ws_feed)
-            opp = detect_arbitrage(event, quotes)
+            opp = detect_arbitrage(event, quotes, remaining_budget=remaining)
             if opp is not None:
                 opportunities.append(opp)
         except Exception as e:
@@ -179,6 +225,11 @@ def scan_for_opportunities(
     # Sort by profit_pct descending (best opportunities first)
     opportunities.sort(key=lambda o: o.profit_pct, reverse=True)
 
+    if skipped_budget:
+        logger.info(
+            "Skipped %d events with exhausted position budgets",
+            skipped_budget,
+        )
     logger.info(
         "Found %d opportunities from %d events",
         len(opportunities), len(events),
