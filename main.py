@@ -148,7 +148,7 @@ def main() -> None:
     session_cost = 0.0
     session_profit = 0.0
     # Load persisted position state (survives restarts).
-    position_costs, event_last_traded = load_positions()
+    position_costs, event_last_traded, event_traded_costs = load_positions()
     if position_costs:
         total_deployed = sum(position_costs.values())
         main_logger.info(
@@ -242,6 +242,26 @@ def main() -> None:
                 continue
 
             consecutive_failures = 0
+
+            # Dedup: skip events where prices haven't improved since last trade
+            if event_traded_costs:
+                before_dedup = len(opportunities)
+                opportunities = [
+                    opp for opp in opportunities
+                    if opp.event_id not in event_traded_costs
+                    or opp.total_cost < event_traded_costs[opp.event_id] - config.MIN_REPRICE_IMPROVEMENT
+                ]
+                deduped = before_dedup - len(opportunities)
+                if deduped:
+                    print(f"  Dedup-skipped: {deduped} (prices unchanged since last trade)")
+
+            if not opportunities:
+                _sleep_with_summary(
+                    scan_count, scan_t0, logfile,
+                    len(multi_events), 0,
+                    raw_count=len(raw_events),
+                )
+                continue
 
             # Step 4: Display and execute the best opportunity
             for opp in opportunities:
@@ -351,9 +371,10 @@ def main() -> None:
                 position_costs[eid] = position_costs.get(eid, 0.0) + cost
                 # Start cooldown so we don't re-trade this event next scan
                 event_last_traded[eid] = scan_count
+                event_traded_costs[eid] = best.total_cost
                 remaining = config.MAX_POSITION_COST - position_costs[eid]
                 # Persist position state immediately after every trade
-                save_positions(position_costs, event_last_traded)
+                save_positions(position_costs, event_last_traded, event_traded_costs)
                 print(
                     f"\n  Position [{eid}]: "
                     f"${position_costs[eid]:.2f} deployed, "

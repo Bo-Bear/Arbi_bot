@@ -32,6 +32,9 @@ MAX_POSITION_COST: float = float(os.getenv("MAX_POSITION_COST", "200.0"))
 # After trading an event, skip it for this many scans so the bot finds
 # new opportunities instead of re-trading the same stale orderbook.
 EVENT_COOLDOWN_SCANS: int = int(os.getenv("EVENT_COOLDOWN_SCANS", "10"))
+# Minimum decrease in total_cost (per share) needed to re-trade an event
+# after cooldown expires.  Prevents re-trading at identical prices.
+MIN_REPRICE_IMPROVEMENT: float = float(os.getenv("MIN_REPRICE_IMPROVEMENT", "0.005"))
 
 # --- Execution ---
 ORDER_TIMEOUT_S: float = float(os.getenv("ORDER_TIMEOUT_S", "20"))
