@@ -189,7 +189,8 @@ def main() -> None:
                 before = len(multi_events)
                 multi_events = [
                     e for e in multi_events
-                    if (scan_count - event_last_traded.get(e.event_id, 0))
+                    if e.event_id not in event_last_traded
+                    or (scan_count - event_last_traded[e.event_id])
                     > config.EVENT_COOLDOWN_SCANS
                 ]
                 cooled = before - len(multi_events)
