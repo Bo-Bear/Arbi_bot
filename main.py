@@ -55,6 +55,7 @@ def _confirm_settings() -> bool:
     print(f"  Scan interval:     {config.SCAN_INTERVAL_SECONDS}s")
     print(f"  Max trades:        {config.MAX_TRADES_PER_SESSION}")
     print(f"  Max drawdown:      ${config.MAX_SESSION_DRAWDOWN:.2f}")
+    print(f"  Circuit breaker:   {config.MAX_CONSECUTIVE_FAILURES} empty scans")
     print(f"{'=' * 60}")
 
     if config.EXEC_MODE == "live":

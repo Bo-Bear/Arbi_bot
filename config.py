@@ -41,7 +41,7 @@ LIVE_PRICE_BUFFER: float = float(os.getenv("LIVE_PRICE_BUFFER", "0.02"))
 # --- Risk management ---
 MAX_SESSION_DRAWDOWN: float = float(os.getenv("MAX_SESSION_DRAWDOWN", "100.0"))
 MAX_TRADES_PER_SESSION: int = int(os.getenv("MAX_TRADES_PER_SESSION", "50"))
-MAX_CONSECUTIVE_FAILURES: int = int(os.getenv("MAX_CONSECUTIVE_FAILURES", "5"))
+MAX_CONSECUTIVE_FAILURES: int = int(os.getenv("MAX_CONSECUTIVE_FAILURES", "100"))
 
 # --- Logging ---
 LOG_DIR: str = os.getenv("LOG_DIR", "logs")
