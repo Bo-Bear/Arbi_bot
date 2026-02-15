@@ -15,11 +15,13 @@ from typing import List, Optional
 
 from config import (
     EXEC_MODE, LIVE_PRICE_BUFFER, ORDER_TIMEOUT_S,
+    MAX_QUOTE_STALENESS_S, ALLOW_GTC_FALLBACK, UNWIND_TIMEOUT_S,
 )
 from models import (
     ArbitrageOpportunity, LegFill, ExecutionResult, OutcomeQuote,
 )
 from polymarket.clob import place_order, poll_order_status, sell_position
+from polymarket.websocket_feed import OrderbookFeed
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,7 @@ def _execute_single_leg_live(
     """Execute a single leg in live mode using FOK orders.
 
     Places a FOK (Fill or Kill) order at the best ask + buffer.
-    If FOK is not supported, falls back to GTC with tight timeout.
+    GTC fallback is only used when ALLOW_GTC_FALLBACK is True.
     """
     t0 = time.monotonic()
 
@@ -69,11 +71,14 @@ def _execute_single_leg_live(
     )
 
     if not result["success"]:
-        # FOK might not be supported — fall back to GTC
         error_msg = result.get("error", "")
-        if "FOK" in str(error_msg).upper() or "unsupported" in str(error_msg).lower():
-            logger.info(
-                "FOK not supported for %s, falling back to GTC",
+        is_fok_unsupported = (
+            "FOK" in str(error_msg).upper()
+            or "unsupported" in str(error_msg).lower()
+        )
+        if is_fok_unsupported and ALLOW_GTC_FALLBACK:
+            logger.warning(
+                "FOK not supported for %s, falling back to GTC (ALLOW_GTC_FALLBACK=true)",
                 quote.outcome_name,
             )
             result = place_order(
@@ -82,6 +87,11 @@ def _execute_single_leg_live(
                 size=size,
                 side="BUY",
                 order_type="GTC",
+            )
+        elif is_fok_unsupported:
+            logger.error(
+                "FOK not supported for %s and GTC fallback disabled — leg failed",
+                quote.outcome_name,
             )
 
     latency = (time.monotonic() - t0) * 1000
@@ -126,9 +136,107 @@ def _execute_single_leg_live(
     )
 
 
+def _refresh_quotes(
+    opportunity: ArbitrageOpportunity,
+    ws_feed: Optional[OrderbookFeed] = None,
+) -> Optional[List[OutcomeQuote]]:
+    """Re-fetch quotes for all legs immediately before execution.
+
+    Checks WS staleness first. If any quote is too stale (or WS is
+    unavailable), falls back to HTTP orderbook fetch.
+
+    Returns updated quotes if the arb still looks valid, None if the
+    opportunity has disappeared (total cost >= $1.00).
+    """
+    from scanner import quote_event
+    from models import MultiOutcomeEvent, OutcomeToken
+
+    # Check staleness via WS
+    needs_http_refresh = False
+    if ws_feed is not None:
+        for q in opportunity.quotes:
+            staleness = ws_feed.get_staleness(q.token_id)
+            if staleness is None or staleness > MAX_QUOTE_STALENESS_S:
+                needs_http_refresh = True
+                logger.info(
+                    "Quote stale for %s (%.1fs) — refreshing via HTTP",
+                    q.outcome_name,
+                    staleness if staleness is not None else -1,
+                )
+                break
+    else:
+        needs_http_refresh = True
+
+    if not needs_http_refresh:
+        # WS data is fresh — re-read from WS cache
+        refreshed = []
+        for q in opportunity.quotes:
+            asks = ws_feed.get_asks(q.token_id)
+            if asks and len(asks) > 0:
+                refreshed.append(OutcomeQuote(
+                    token_id=q.token_id,
+                    outcome_name=q.outcome_name,
+                    market_id=q.market_id,
+                    best_ask_price=asks[0][0],
+                    available_size=asks[0][1],
+                    ask_levels=asks[:10],
+                ))
+            else:
+                needs_http_refresh = True
+                break
+
+        if not needs_http_refresh:
+            total_cost = sum(q.best_ask_price for q in refreshed)
+            if total_cost >= 1.0:
+                logger.warning(
+                    "Arb vanished after WS refresh: cost=$%.4f >= $1.00",
+                    total_cost,
+                )
+                return None
+            return refreshed
+
+    # Fall back to HTTP refresh
+    event = MultiOutcomeEvent(
+        event_id=opportunity.event_id,
+        title=opportunity.event_title,
+        slug=opportunity.event_slug,
+        outcomes=[
+            OutcomeToken(
+                token_id=q.token_id,
+                outcome_name=q.outcome_name,
+                market_id=q.market_id,
+                question=q.outcome_name,
+            )
+            for q in opportunity.quotes
+        ],
+        neg_risk=opportunity.neg_risk,
+    )
+    refreshed = quote_event(event, ws_feed=None)  # force HTTP
+
+    total_cost = sum(q.best_ask_price for q in refreshed)
+    if total_cost >= 1.0:
+        logger.warning(
+            "Arb vanished after HTTP refresh: cost=$%.4f >= $1.00",
+            total_cost,
+        )
+        return None
+
+    # Check all legs still have valid asks
+    for q in refreshed:
+        if q.best_ask_price <= 0 or q.available_size <= 0:
+            logger.warning(
+                "Leg %s has no asks after refresh — aborting",
+                q.outcome_name,
+            )
+            return None
+
+    return refreshed
+
+
 def execute_opportunity(
     opportunity: ArbitrageOpportunity,
     size: Optional[float] = None,
+    ws_feed: Optional[OrderbookFeed] = None,
 ) -> ExecutionResult:
     """Execute all legs of a multi-outcome arbitrage opportunity.
 
@@ -138,6 +246,7 @@ def execute_opportunity(
     Args:
         opportunity: The detected arbitrage opportunity
         size: Override the executable size (default: use opportunity.executable_size)
+        ws_feed: WebSocket feed for staleness checks and quote refresh
 
     Returns:
         ExecutionResult with fill details for each leg
@@ -150,6 +259,39 @@ def execute_opportunity(
 
     t0 = time.monotonic()
     is_paper = (EXEC_MODE == "paper")
+
+    # Live mode: refresh quotes right before execution to avoid stale prices
+    if not is_paper:
+        refreshed = _refresh_quotes(opportunity, ws_feed)
+        if refreshed is None:
+            logger.warning("Opportunity vanished on pre-execution refresh — skipping")
+            return ExecutionResult(
+                opportunity=opportunity,
+                leg_fills=[],
+                total_latency_ms=(time.monotonic() - t0) * 1000,
+                all_filled=False,
+                total_cost_actual=0.0,
+                total_filled_size=0.0,
+                num_legs_filled=0,
+                num_legs_failed=len(opportunity.quotes),
+            )
+        # Update the quotes used for execution
+        opportunity = ArbitrageOpportunity(
+            event_id=opportunity.event_id,
+            event_title=opportunity.event_title,
+            event_slug=opportunity.event_slug,
+            quotes=refreshed,
+            total_cost=sum(q.best_ask_price for q in refreshed),
+            profit_per_share=1.0 - sum(q.best_ask_price for q in refreshed),
+            profit_pct=((1.0 - sum(q.best_ask_price for q in refreshed))
+                        / sum(q.best_ask_price for q in refreshed) * 100.0),
+            executable_size=min(q.available_size for q in refreshed),
+            neg_risk=opportunity.neg_risk,
+        )
+        # Recompute exec_size with refreshed availability
+        exec_size = min(exec_size, float(int(opportunity.executable_size)))
+        if exec_size < 1:
+            exec_size = 1.0
 
     logger.info(
         "Executing %d-leg arb on '%s' | size=%.0f | cost=$%.4f | profit=%.2f%%",
@@ -233,6 +375,10 @@ def _handle_partial_execution(result: ExecutionResult):
     This is the critical risk management function. If we bought
     some outcomes but not all, we have directional exposure instead
     of a riskless arb. We sell back the filled legs to close out.
+
+    Sells via GTC orders and polls each for fill confirmation up to
+    UNWIND_TIMEOUT_S.  Any legs that remain open after the timeout
+    are flagged with a CRITICAL log for manual intervention.
     """
     filled = [f for f in result.leg_fills if f.status == "filled" and f.filled_size > 0]
     failed = [f for f in result.leg_fills if f.status != "filled"]
@@ -242,6 +388,8 @@ def _handle_partial_execution(result: ExecutionResult):
         len(filled), len(result.leg_fills), len(failed),
     )
 
+    # Submit all unwind orders and collect order IDs for polling
+    unwind_orders = []  # list of (leg, order_id)
     for leg in filled:
         try:
             logger.info(
@@ -255,19 +403,62 @@ def _handle_partial_execution(result: ExecutionResult):
                 price=leg.actual_price or leg.planned_price,
             )
             if unwind_result["success"]:
+                oid = unwind_result.get("order_id")
                 logger.info(
                     "Unwind submitted for %s (order %s)",
-                    leg.outcome_name, unwind_result.get("order_id"),
+                    leg.outcome_name, oid,
                 )
+                unwind_orders.append((leg, oid))
             else:
                 logger.error(
-                    "Unwind FAILED for %s: %s",
+                    "Unwind SUBMIT FAILED for %s: %s — MANUAL INTERVENTION NEEDED",
                     leg.outcome_name, unwind_result.get("error"),
                 )
         except Exception as e:
             logger.error(
-                "Unwind ERROR for %s: %s — MANUAL INTERVENTION MAY BE NEEDED",
+                "Unwind ERROR for %s: %s — MANUAL INTERVENTION NEEDED",
                 leg.outcome_name, e,
+            )
+
+    # Poll all submitted unwind orders for fill confirmation
+    if unwind_orders:
+        logger.info(
+            "Polling %d unwind orders (timeout=%.0fs)...",
+            len(unwind_orders), UNWIND_TIMEOUT_S,
+        )
+        remaining = list(unwind_orders)
+        deadline = time.monotonic() + UNWIND_TIMEOUT_S
+        while remaining and time.monotonic() < deadline:
+            still_pending = []
+            for leg, oid in remaining:
+                try:
+                    status, filled_size, _ = poll_order_status(oid, timeout=2)
+                    if status == "filled":
+                        logger.info(
+                            "Unwind CONFIRMED for %s (%.0f filled)",
+                            leg.outcome_name, filled_size,
+                        )
+                    elif status in ("canceled", "partial"):
+                        logger.error(
+                            "Unwind %s for %s (filled=%.0f/%.0f) — MANUAL INTERVENTION NEEDED",
+                            status.upper(), leg.outcome_name, filled_size, leg.filled_size,
+                        )
+                    else:
+                        # Still open — check again next loop
+                        still_pending.append((leg, oid))
+                except Exception as e:
+                    logger.debug("Unwind poll error for %s: %s", leg.outcome_name, e)
+                    still_pending.append((leg, oid))
+            remaining = still_pending
+            if remaining:
+                time.sleep(1.0)
+
+        # Any orders that never resolved
+        for leg, oid in remaining:
+            logger.critical(
+                "UNWIND TIMEOUT for %s (order %s) — "
+                "POSITION STILL OPEN, MANUAL INTERVENTION REQUIRED",
+                leg.outcome_name, oid,
             )
 
     # Log failed legs for debugging

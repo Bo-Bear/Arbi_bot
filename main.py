@@ -36,6 +36,7 @@ from logger import (
 from models import ArbitrageOpportunity, ExecutionResult
 from polymarket.gamma import discover_multi_outcome_events, fetch_all_active_events
 from polymarket.websocket_feed import OrderbookFeed
+from position_store import load_positions, save_positions
 from scanner import scan_for_opportunities
 
 
@@ -48,7 +49,7 @@ def _confirm_settings() -> bool:
     print(f"  Mode:              {mode}")
     print(f"  Min outcomes:      {config.MIN_OUTCOMES}")
     print(f"  Max outcomes:      {config.MAX_OUTCOMES}")
-    print(f"  Min profit:        {config.MIN_PROFIT_PCT}%")
+    print(f"  Min profit:        {config.MIN_PROFIT_PCT}% + {config.FEE_BUFFER_PCT}% fee buffer = {config.MIN_PROFIT_PCT + config.FEE_BUFFER_PCT}% effective")
     print(f"  Max profit:        {config.MAX_PROFIT_PCT}% (stale data filter)")
     print(f"  Min exec size:     {config.MIN_EXECUTABLE_SIZE} shares")
     print(f"  Max position cost: ${config.MAX_POSITION_COST:.2f}")
@@ -136,12 +137,11 @@ def main() -> None:
     consecutive_failures = 0
     session_cost = 0.0
     session_profit = 0.0
-    # Cumulative cost deployed per event — prevents re-trading the same event
-    # beyond MAX_POSITION_COST across scans.
-    position_costs: Dict[str, float] = {}
-    # Per-event cooldown: maps event_id -> scan number when last traded.
-    # Events are skipped for EVENT_COOLDOWN_SCANS after a trade.
-    event_last_traded: Dict[str, int] = {}
+    # Load persisted position state (survives restarts).
+    position_costs, event_last_traded = load_positions()
+    if position_costs:
+        total_deployed = sum(position_costs.values())
+        print(f"  Restored positions: {len(position_costs)} events, ${total_deployed:.2f} deployed")
 
     exit_reason = "max_trades_reached"
 
@@ -249,8 +249,25 @@ def main() -> None:
                 ],
             )
 
+            # Pre-trade drawdown guard: estimate worst-case loss if all
+            # legs fill but the arb somehow loses (e.g. slippage).  The
+            # maximum loss is the total cost of the position.
+            estimated_cost = best.total_cost * float(int(best.executable_size))
+            if session_profit - estimated_cost < -config.MAX_SESSION_DRAWDOWN:
+                print(
+                    f"\n  DRAWDOWN GUARD: next trade could cost ${estimated_cost:.2f}, "
+                    f"session P&L=${session_profit:.2f}, limit=${config.MAX_SESSION_DRAWDOWN:.2f}. "
+                    f"Skipping."
+                )
+                _sleep_with_summary(
+                    scan_count, scan_t0, logfile,
+                    len(multi_events), len(opportunities),
+                    raw_count=len(raw_events),
+                )
+                continue
+
             print(f"\n  Executing best opportunity: {best.event_title[:50]}")
-            result = execute_opportunity(best)
+            result = execute_opportunity(best, ws_feed=ws_feed)
             trades.append(result)
 
             # Display result
@@ -299,6 +316,8 @@ def main() -> None:
                 # Start cooldown so we don't re-trade this event next scan
                 event_last_traded[eid] = scan_count
                 remaining = config.MAX_POSITION_COST - position_costs[eid]
+                # Persist position state immediately after every trade
+                save_positions(position_costs, event_last_traded)
                 print(
                     f"\n  Position [{eid}]: "
                     f"${position_costs[eid]:.2f} deployed, "

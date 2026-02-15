@@ -34,14 +34,28 @@ MAX_POSITION_COST: float = float(os.getenv("MAX_POSITION_COST", "200.0"))
 EVENT_COOLDOWN_SCANS: int = int(os.getenv("EVENT_COOLDOWN_SCANS", "10"))
 
 # --- Execution ---
-ORDER_TIMEOUT_S: float = float(os.getenv("ORDER_TIMEOUT_S", "10"))
+ORDER_TIMEOUT_S: float = float(os.getenv("ORDER_TIMEOUT_S", "20"))
 # Price buffer added to limit orders to improve fill rate
 LIVE_PRICE_BUFFER: float = float(os.getenv("LIVE_PRICE_BUFFER", "0.02"))
+# Maximum quote staleness (seconds) allowed before execution.
+# If any leg's WS data is older than this, quotes are refreshed via HTTP.
+MAX_QUOTE_STALENESS_S: float = float(os.getenv("MAX_QUOTE_STALENESS_S", "5.0"))
+# Estimated fee + slippage overhead (percentage points) subtracted from
+# raw profit before the MIN_PROFIT_PCT check. Ensures opportunities remain
+# profitable after real-world execution costs.
+FEE_BUFFER_PCT: float = float(os.getenv("FEE_BUFFER_PCT", "1.0"))
+# Maximum seconds to wait for unwind sell orders to fill before alerting.
+UNWIND_TIMEOUT_S: float = float(os.getenv("UNWIND_TIMEOUT_S", "30"))
+# Allow FOK → GTC fallback when the exchange doesn't support FOK.
+# Disable for stricter atomicity (leg will fail instead of falling back).
+ALLOW_GTC_FALLBACK: bool = os.getenv("ALLOW_GTC_FALLBACK", "false").lower() == "true"
 
 # --- Risk management ---
 MAX_SESSION_DRAWDOWN: float = float(os.getenv("MAX_SESSION_DRAWDOWN", "100.0"))
 MAX_TRADES_PER_SESSION: int = int(os.getenv("MAX_TRADES_PER_SESSION", "50"))
 MAX_CONSECUTIVE_FAILURES: int = int(os.getenv("MAX_CONSECUTIVE_FAILURES", "100"))
+# File path for persisting position state across restarts.
+POSITION_STATE_FILE: str = os.getenv("POSITION_STATE_FILE", "position_state.json")
 
 # --- Logging ---
 LOG_DIR: str = os.getenv("LOG_DIR", "logs")

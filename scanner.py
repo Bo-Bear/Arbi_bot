@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 
 from config import (
     MIN_PROFIT_PCT, MAX_PROFIT_PCT, MIN_EXECUTABLE_SIZE, MAX_POSITION_COST,
+    FEE_BUFFER_PCT,
 )
 from models import (
     MultiOutcomeEvent, OutcomeQuote, ArbitrageOpportunity,
@@ -138,8 +139,8 @@ def detect_arbitrage(
 
     profit_pct = (profit_per_share / total_cost) * 100.0
 
-    # Check profit thresholds
-    if profit_pct < MIN_PROFIT_PCT:
+    # Check profit thresholds (include fee/slippage buffer for live viability)
+    if profit_pct < MIN_PROFIT_PCT + FEE_BUFFER_PCT:
         return None
     if profit_pct > MAX_PROFIT_PCT:
         logger.info(
