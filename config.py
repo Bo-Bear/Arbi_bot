@@ -26,7 +26,7 @@ MAX_PROFIT_PCT: float = float(os.getenv("MAX_PROFIT_PCT", "15.0"))
 # Minimum number of shares executable across all legs
 MIN_EXECUTABLE_SIZE: float = float(os.getenv("MIN_EXECUTABLE_SIZE", "5"))
 # Maximum total dollar cost per arb (risk cap)
-MAX_POSITION_COST: float = float(os.getenv("MAX_POSITION_COST", "200.0"))
+MAX_POSITION_COST: float = float(os.getenv("MAX_POSITION_COST", "20.0"))
 
 # --- Cooldown ---
 # After trading an event, skip it for this many scans so the bot finds
@@ -54,7 +54,7 @@ UNWIND_TIMEOUT_S: float = float(os.getenv("UNWIND_TIMEOUT_S", "30"))
 ALLOW_GTC_FALLBACK: bool = os.getenv("ALLOW_GTC_FALLBACK", "false").lower() == "true"
 
 # --- Risk management ---
-MAX_SESSION_DRAWDOWN: float = float(os.getenv("MAX_SESSION_DRAWDOWN", "100.0"))
+MAX_SESSION_DRAWDOWN: float = float(os.getenv("MAX_SESSION_DRAWDOWN", "20.0"))
 MAX_TRADES_PER_SESSION: int = int(os.getenv("MAX_TRADES_PER_SESSION", "50"))
 # Maximum total dollar cost of trades per session.  Once session_cost
 # reaches this limit the bot stops placing new trades.
