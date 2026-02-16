@@ -5,6 +5,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- Version ---
+VERSION: str = "1.1.0"
+
 # --- Polymarket credentials ---
 POLY_PRIVATE_KEY: str = os.getenv("POLY_PRIVATE_KEY", "")
 POLY_SIGNATURE_TYPE: int = int(os.getenv("POLY_SIGNATURE_TYPE", "0"))

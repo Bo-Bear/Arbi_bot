@@ -48,7 +48,7 @@ def _confirm_settings() -> bool:
     """Display settings and get user confirmation to proceed."""
     mode = "LIVE TRADING" if config.EXEC_MODE == "live" else "Paper Testing"
     print(f"\n{'=' * 60}")
-    print(f"  MULTI-OUTCOME ARBITRAGE BOT")
+    print(f"  MULTI-OUTCOME ARBITRAGE BOT  v{config.VERSION}")
     print(f"{'=' * 60}")
     print(f"  Mode:              {mode}")
     print(f"  Min outcomes:      {config.MIN_OUTCOMES}")
