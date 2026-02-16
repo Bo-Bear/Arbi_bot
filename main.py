@@ -44,12 +44,32 @@ from position_store import load_positions, save_positions
 from scanner import scan_for_opportunities
 
 
+def _select_mode() -> bool:
+    """Prompt user to select paper or live trading mode.
+
+    Updates config.EXEC_MODE in-place and returns False if the user aborts.
+    """
+    print(f"\n{'=' * 60}")
+    print(f"  MULTI-OUTCOME ARBITRAGE BOT  v{config.VERSION}")
+    print(f"{'=' * 60}")
+    print("\n  Select trading mode:")
+    print("    1) Paper  — simulated trades, no real orders")
+    print("    2) Live   — real orders on Polymarket")
+    choice = input("\n  Enter 1 or 2: ").strip()
+    if choice == "2":
+        config.EXEC_MODE = "live"
+    elif choice == "1":
+        config.EXEC_MODE = "paper"
+    else:
+        print("  Invalid choice. Aborting.")
+        return False
+    return True
+
+
 def _confirm_settings() -> bool:
     """Display settings and get user confirmation to proceed."""
     mode = "LIVE TRADING" if config.EXEC_MODE == "live" else "Paper Testing"
     print(f"\n{'=' * 60}")
-    print(f"  MULTI-OUTCOME ARBITRAGE BOT  v{config.VERSION}")
-    print(f"{'=' * 60}")
     print(f"  Mode:              {mode}")
     print(f"  Min outcomes:      {config.MIN_OUTCOMES}")
     print(f"  Max outcomes:      {config.MAX_OUTCOMES}")
@@ -105,6 +125,10 @@ def _validate_live_credentials() -> bool:
 def main() -> None:
     setup_logging()
     logfile = get_logfile_path()
+
+    if not _select_mode():
+        print("Aborted.")
+        return
 
     if not _confirm_settings():
         print("Aborted.")
