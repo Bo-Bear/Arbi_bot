@@ -56,6 +56,9 @@ ALLOW_GTC_FALLBACK: bool = os.getenv("ALLOW_GTC_FALLBACK", "false").lower() == "
 # --- Risk management ---
 MAX_SESSION_DRAWDOWN: float = float(os.getenv("MAX_SESSION_DRAWDOWN", "100.0"))
 MAX_TRADES_PER_SESSION: int = int(os.getenv("MAX_TRADES_PER_SESSION", "50"))
+# Maximum total dollar cost of trades per session.  Once session_cost
+# reaches this limit the bot stops placing new trades.
+MAX_SESSION_COST: float = float(os.getenv("MAX_SESSION_COST", "20.0"))
 MAX_CONSECUTIVE_FAILURES: int = int(os.getenv("MAX_CONSECUTIVE_FAILURES", "100"))
 # File path for persisting position state across restarts.
 POSITION_STATE_FILE: str = os.getenv("POSITION_STATE_FILE", "position_state.json")

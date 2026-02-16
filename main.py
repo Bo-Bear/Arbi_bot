@@ -59,6 +59,7 @@ def _confirm_settings() -> bool:
     print(f"  Max position cost: ${config.MAX_POSITION_COST:.2f}")
     print(f"  Scan interval:     {config.SCAN_INTERVAL_SECONDS}s")
     print(f"  Max trades:        {config.MAX_TRADES_PER_SESSION}")
+    print(f"  Max session cost:  ${config.MAX_SESSION_COST:.2f}")
     print(f"  Max drawdown:      ${config.MAX_SESSION_DRAWDOWN:.2f}")
     print(f"  Circuit breaker:   {config.MAX_CONSECUTIVE_FAILURES} empty scans")
     print(f"{'=' * 60}")
@@ -123,6 +124,7 @@ def main() -> None:
         "max_profit_pct": config.MAX_PROFIT_PCT,
         "min_executable_size": config.MIN_EXECUTABLE_SIZE,
         "max_position_cost": config.MAX_POSITION_COST,
+        "max_session_cost": config.MAX_SESSION_COST,
         "scan_interval": config.SCAN_INTERVAL_SECONDS,
         "max_quote_staleness_s": config.MAX_QUOTE_STALENESS_S,
         "allow_gtc_fallback": config.ALLOW_GTC_FALLBACK,
@@ -290,10 +292,53 @@ def main() -> None:
                 ],
             )
 
+            # Pre-trade session budget guard: stop or cap size so we
+            # never exceed MAX_SESSION_COST in a single session.
+            estimated_cost = best.total_cost * float(int(best.executable_size))
+            remaining_budget = config.MAX_SESSION_COST - session_cost
+
+            if remaining_budget <= 0:
+                main_logger.info(
+                    "SESSION BUDGET: $%.2f spent of $%.2f limit — stopping.",
+                    session_cost, config.MAX_SESSION_COST,
+                )
+                print(
+                    f"\n  SESSION BUDGET REACHED: ${session_cost:.2f} "
+                    f"spent of ${config.MAX_SESSION_COST:.2f} limit. Stopping."
+                )
+                exit_reason = "session_budget_reached"
+                break
+
+            if estimated_cost > remaining_budget:
+                # Try to reduce size to fit within remaining budget
+                max_shares = remaining_budget / best.total_cost
+                capped_size = float(int(max_shares))  # floor to integer
+                if capped_size < 1:
+                    main_logger.info(
+                        "SESSION BUDGET: trade needs $%.2f but only $%.2f left — skipping.",
+                        estimated_cost, remaining_budget,
+                    )
+                    print(
+                        f"\n  SESSION BUDGET: trade needs ${estimated_cost:.2f} "
+                        f"but only ${remaining_budget:.2f} left. Skipping."
+                    )
+                    exit_reason = "session_budget_reached"
+                    break
+                main_logger.info(
+                    "SESSION BUDGET: capping size %d → %d to fit $%.2f remaining budget.",
+                    int(best.executable_size), int(capped_size), remaining_budget,
+                )
+                print(
+                    f"\n  SESSION BUDGET: capping trade from "
+                    f"{int(best.executable_size)} → {int(capped_size)} shares "
+                    f"(${remaining_budget:.2f} budget left)"
+                )
+                best.executable_size = capped_size
+                estimated_cost = best.total_cost * capped_size
+
             # Pre-trade drawdown guard: estimate worst-case loss if all
             # legs fill but the arb somehow loses (e.g. slippage).  The
             # maximum loss is the total cost of the position.
-            estimated_cost = best.total_cost * float(int(best.executable_size))
             if session_profit - estimated_cost < -config.MAX_SESSION_DRAWDOWN:
                 main_logger.warning(
                     "DRAWDOWN GUARD: est_cost=$%.2f, session_pnl=$%.2f, limit=$%.2f — skipping %s",
@@ -393,6 +438,15 @@ def main() -> None:
                         f">= ${config.MAX_SESSION_DRAWDOWN:.2f}. Stopping."
                     )
                     exit_reason = "drawdown_limit"
+                    break
+
+                # Session budget check
+                if session_cost >= config.MAX_SESSION_COST:
+                    print(
+                        f"\n  SESSION BUDGET REACHED: ${session_cost:.2f} "
+                        f"spent of ${config.MAX_SESSION_COST:.2f} limit. Stopping."
+                    )
+                    exit_reason = "session_budget_reached"
                     break
 
             # Log scan summary
